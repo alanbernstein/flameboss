@@ -30,7 +30,9 @@ class Cook(object):
         self.fname = '%s/%s.csv' % (self.cache_path, self.cook_id)
         self.raw_url = self.url_format_string % cook_id
 
-        self.mode = 'live'
+        is_dst = time.daylight and time.localtime().tm_isdst > 0
+        self.utc_offset = - (time.altzone if is_dst else time.timezone)
+
         self.get_from_cache_or_url()
         self.transform_sensor_data()
 
@@ -56,21 +58,26 @@ class Cook(object):
         self.raw_data = pd.read_csv(self.fname)
 
     def transform_sensor_data(self):
-        def translate(x):
-            # convert raw temperature data to celsius
+        def transform_temp(x):
+            # convert raw temperature data to fahrenheit
             x = x.mask(x<-32000, 0)  # clean spurious values
             x = x.mask(x>2300, 0)
             x = x/10             # transform to celsius
             x = x * 1.8 + 32     # convert to fahrenheit
             return x
 
+        def transform_duty_cycle(x):
+            x = x / 100.0
+            return x
+
         self.data = self.raw_data.copy(deep=True)
         for id in ['set_temp', 'pit_temp', 'meat_temp1']:
-            self.data[id] = translate(self.data[id])
+            self.data[id] = transform_temp(self.data[id])
 
+        self.data['duty_cycle'] = transform_duty_cycle(self.data['duty_cycle'])
 
     def projection_linear_manual(self, t, m, start_fraction):
-        t1 = t[int(len(t)*0.7)]
+        t1 = t[int(len(t)*start_fraction)]
         t2 = t[len(t)-1]
 
         m = self.data['meat_temp1']
@@ -97,8 +104,7 @@ class Cook(object):
 
 
     def plot(self):
-        t = pd.to_datetime(self.data['time'] - 60*60*6, unit='s')
-        duty_cycle = self.data['duty_cycle'] / 100.0
+        t = pd.to_datetime(self.data['time'] + self.utc_offset, unit='s')
 
         fig, ax1 = plt.subplots()
         h1 = ax1.plot(t, self.data['set_temp'], 'b-', label='set temp')
@@ -113,7 +119,7 @@ class Cook(object):
             label.set(rotation=30, horizontalalignment='right')
 
         ax2 = ax1.twinx()
-        h7 = ax2.plot(t, duty_cycle, color=[0, 0.5, 0, 0.5], linewidth=1, label='duty cycle')
+        h7 = ax2.plot(t, self.data['duty_cycle'], color=[0, 0.5, 0, 0.5], linewidth=1, label='duty cycle')
         ax2.set_ylabel('fan duty cycle')
         ax2.grid('off')
 
